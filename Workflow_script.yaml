@@ -1,0 +1,74 @@
+name: Build and Push Docker Image to ACR
+
+on:
+  push:
+    branches:
+      - 'main'  # Triggers workflow on push to the 'main' branch
+    paths:
+      - 'vote/app.py'
+      
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+    # Checkout the repository
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+
+    # Generate a version number with a build number
+    - name: Generate Version Tag
+      id: version
+      run: |
+        VERSION="1.0.${{ github.run_number }}"  # Major.Minor.BuildNumber
+        echo "VERSION=${VERSION}" >> $GITHUB_ENV
+
+    # Debug: Output the generated version
+    - name: Show Generated Version
+      run: |
+        echo "Generated Version: ${{ env.VERSION }}"
+
+    # Log in to ACR directly using Docker
+    - name: Log in to ACR with Docker
+      run: |
+        echo ${{ secrets.ACR_PASSWORD }} | docker login ${{ secrets.ACR_NAME }}.azurecr.io -u ${{ secrets.ACR_USERNAME }} --password-stdin
+
+    # Build and tag the Docker image
+    - name: Build Docker Image
+      run: |
+        docker build -f vote/Dockerfile -t ${{ secrets.ACR_NAME }}.azurecr.io/voting:${{ env.VERSION }} .
+
+    # Push the Docker image to ACR
+    - name: Push Docker Image
+      run: |
+        docker push ${{ secrets.ACR_NAME }}.azurecr.io/voting:${{ env.VERSION }}
+    # Locate and update Kubernetes spec file
+    - name: Locate and Update Kubernetes Spec
+      run: |
+        FILE=$(find . -name 'vote-deployment.yaml')
+         if [ -z "$FILE" ]; then
+           echo "File not found!"
+           exit 1
+         fi
+         echo "Updating file at: $FILE"
+         sed -i "s|image:.*|image: ${{ secrets.ACR_NAME }}.azurecr.io/voting:${{ env.VERSION }}|g" "$FILE"    
+    
+    # Commit and push the updated file
+    - name: Commit and Push Changes
+      env:
+        GITHUB_TOKEN: ${{ secrets.Token }}
+      run: |
+        FILE=$(find . -name 'vote-deployment.yaml')
+          if [ -z "$FILE" ]; then
+            echo "File not found for git commit!"
+            exit 1
+          fi
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add "$FILE"
+        git commit -m "Update vote-deployment.yaml with new image:tag"
+        git push
